@@ -1,0 +1,527 @@
+package Agents;
+
+import jade.core.AID;
+import jade.core.Agent;
+import jade.core.behaviours.*;
+import jade.domain.DFService;
+import jade.domain.FIPAAgentManagement.DFAgentDescription;
+import jade.domain.FIPAAgentManagement.ServiceDescription;
+import jade.domain.FIPAException;
+import jade.lang.acl.ACLMessage;
+import jade.lang.acl.MessageTemplate;
+
+import java.io.FileWriter;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+public class Team extends Agent {
+    private List<AID> Teams=new ArrayList<>();
+    private List<AID> Programmers=new ArrayList<>();
+
+    int workPointer = 0;
+    int fillingsize = 0;
+    double deviation = 0;
+
+    private double optimalFrontend = -1;
+    private double optimalBackend = -1;
+    private double optimalDatabase = -1;
+
+    private double myFrontend = 0;
+    private double myBackend = 0;
+    private double myDatabase = 0;
+
+    private int countofwrite = 0;
+
+    private List<String> myPNames=new ArrayList<>();
+    private List<Double> myFrontendValues=new ArrayList<>();
+    private List<Double> myBackendValues=new ArrayList<>();
+    private List<Double> myDatabaseValues=new ArrayList<>();
+
+    private List<String> pNames=new ArrayList<>();
+    private List<Double> frontendValues=new ArrayList<>();
+    private List<Double> backendValues=new ArrayList<>();
+    private List<Double> databaseValues=new ArrayList<>();
+
+    private List<String> oNames=new ArrayList<>();
+
+    @Override
+    protected void setup() {
+        System.out.println("Агент Создан!!! " + getAID().getName());
+        DFAgentDescription dfd = new DFAgentDescription();
+        dfd.setName(getAID());
+        ServiceDescription sd = new ServiceDescription();
+        sd.setType("Team");
+        sd.setName("JADE-Team");
+        dfd.addServices(sd);
+        try {
+            DFService.register(this, dfd);
+        } catch (FIPAException fe) {
+            fe.printStackTrace();
+        }
+
+
+        // ФОРМИРОВАНИЕ СПИСКОВ ПРЕДМЕТОВ И КОНТЕЙНЕРВО
+        addBehaviour(new TickerBehaviour(this, 1000) {
+            protected void onTick() {
+                DFAgentDescription template = new DFAgentDescription();
+                DFAgentDescription template2 = new DFAgentDescription();
+                ServiceDescription sd = new ServiceDescription();
+                ServiceDescription sd2 = new ServiceDescription();
+                sd.setType("programmer");
+                sd2.setType("team");
+                template.addServices(sd);
+                template2.addServices(sd2);
+                try {
+                    DFAgentDescription[] result = DFService.search(myAgent, template);
+                    DFAgentDescription[] result2 = DFService.search(myAgent, template2);
+                    for (int i = 0; i < result.length; ++i) {
+                        AID pr = result[i].getName();
+                        if (!Programmers.contains(pr)) {
+                            Programmers.add(pr);
+                        }
+                    }
+                    for (int i = 0; i < result2.length; ++i) {
+                        AID to = result2[i].getName();
+                        if (!Teams.contains(to)) {
+                            Teams.add(to);
+                        }
+                    }
+                    fillingsize = Programmers.size()/Teams.size();
+
+                } catch (FIPAException fe) {
+                    fe.printStackTrace();
+                }
+                myAgent.addBehaviour(new RequestPerformer());
+            }
+        });
+
+        /*addBehaviour(new WakerBehaviour(this, 5000) {
+            protected void handleElapsedTimeout() {
+                writeFile();
+            }
+        });*/
+
+        addBehaviour(new WakerBehaviour(this, 2000) {
+            protected void handleElapsedTimeout() {
+                optimumCalc();
+                addBehaviour(new Preparing());
+            }
+        });
+
+        addBehaviour(new WakerBehaviour(this, 4000) {
+            protected void handleElapsedTimeout() {
+                addBehaviour(new Working());
+            }
+        });
+
+        addBehaviour(new TickerBehaviour(this, 15000) {
+            protected void onTick() {
+                writeFile();
+            }
+        });
+
+    }
+
+
+    // УНИЧТОЖЕНИЕ КОНТЕЙНЕРА
+    protected void takeDown() {
+        try {
+            DFService.deregister(this);
+        }
+        catch (FIPAException fe) {
+            fe.printStackTrace();
+        }
+        System.out.println("Team-agent "+getAID().getName()+" уничтожается.");
+    }
+
+
+    // ОТПРАВЛЕНИЕ ИМЕНИ ДРУГИМ АГЕНТАМ
+    private class RequestPerformer extends Behaviour {
+        public void action() {
+            ACLMessage cfp = new ACLMessage(ACLMessage.CFP);
+            for (int i = 0; i < Teams.size(); ++i) {
+                cfp.addReceiver(Teams.get(i));
+            }
+            cfp.setContent("Team " + getAID().getName());
+            myAgent.send(cfp);
+
+            addBehaviour(new GetTeamsAndProgrammers());
+        }
+        public boolean done() {
+            return true;
+        }
+    }
+
+
+    // ПЕЧАТЬ ТЕКУЩИХ РЕЗУЛЬТАТОВ
+    private void writeFile(){
+        StringBuilder Message = new StringBuilder(countofwrite + " --- " + getAID().getName() + "  Оптимальные значения навыков:{" + optimalFrontend + ";" + optimalBackend + ";" + optimalDatabase + "} ");
+        Message.append(" Текущие значения:{").append(myFrontend).append(";").append(myBackend).append(";").append(myDatabase).append("}  Мера отклонения:").append(String.format("%.3f",deviation)).append(";  Программисты:{;");
+        for(int i = 0; i < fillingsize; i++){
+            Message.append("{").append(myFrontendValues.get(i)).append(";").append(myBackendValues.get(i)).append(";").append(myDatabaseValues.get(i)).append("}");
+        }
+        Message.append("}");
+
+        System.out.println(Message);
+
+        //System.out.println(getAID().getName()+"  Оптимальные значения навыков: B(" + optimalBackend + "), F("+ optimalFrontend +") D("+ optimalDatabase +"); Предметы: " /*+ ProgrammersToPerform + " Вес рюкзака: " + ProgrammersToPerform.stream().reduce(0.0, Double::sum)*/ );
+        try(FileWriter writer = new FileWriter("output.txt", true))
+        {
+            // запись всей строки
+            StringBuilder text = new StringBuilder(countofwrite + " --- " + getAID().getName() + "  Оптимальные значения навыков:{" + optimalFrontend + ";" + optimalBackend + ";" + optimalDatabase + "}");
+            text.append(" Текущие значения:{").append(myFrontend).append(";").append(myBackend).append(";").append(myDatabase).append("}  Мера отклонения:").append(String.format("%.3f",deviation)).append(";  Программисты:{;");
+            for(int i=0;i<fillingsize;i++)
+            {
+                text.append("{").append(myFrontendValues.get(i)).append(";").append(myBackendValues.get(i)).append(";").append(myDatabaseValues.get(i)).append("}");
+            }
+            text.append("}");
+            writer.write(text.toString());
+            writer.append('\n');
+            writer.flush();
+        }
+        catch(IOException ex){
+
+            System.out.println(ex.getMessage());
+        }
+
+        countofwrite++;
+    }
+
+
+    // НАБОР ЗНАЧЕНИЙ ИЗ ДРУГИХ АГЕНТОВ
+    private class GetTeamsAndProgrammers extends CyclicBehaviour {
+        public void action() {
+            MessageTemplate mt = MessageTemplate.MatchPerformative(ACLMessage.CFP);
+            ACLMessage msg = myAgent.receive(mt);
+            if (msg != null) {
+                String title = msg.getContent();
+                String[] arguments = title.split(" ");
+                if(arguments.length!=0) {
+                    if (arguments[0].charAt(0) == 'P'&&!oNames.contains(arguments[1])) {
+                        oNames.add(arguments[1]);
+                        frontendValues.add(Double.parseDouble(arguments[2]));
+                        backendValues.add(Double.parseDouble(arguments[3]));
+                        databaseValues.add(Double.parseDouble(arguments[4]));
+                    }
+                    else
+                    {
+                        if(arguments[0].charAt(0) == 'T'&&!pNames.contains(arguments[1])) {
+                            pNames.add(arguments[1]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ПОДСЧИТЫВАЕТ ОПТИМАЛЬНЫЕ ЗНАЧЕНИЯ ПАРАМЕТРОВ
+    private void optimumCalc(){
+        double sumF = 0;
+        double sumB = 0;
+        double sumD = 0;
+        for(double i:frontendValues)
+        {
+            sumF+=i;
+        }
+        for(double i:backendValues)
+        {
+            sumB+=i;
+        }
+        for(double i:databaseValues)
+        {
+            sumD+=i;
+        }
+        optimalFrontend = sumF/pNames.size();
+        optimalBackend = sumB/pNames.size();
+        optimalDatabase = sumD/pNames.size();
+
+    }
+
+    // ПОДСЧЁТ ПАРАМЕТРА ОТКЛОНЕНИЯ ОТ ИДЕАЛЬНОГО
+    private void parametersCalc(){
+        for (int i = 0; i < fillingsize;i++) {
+            myFrontend+=myFrontendValues.get(i);
+            myBackend+=myBackendValues.get(i);
+            myDatabase+=myDatabaseValues.get(i);
+        }
+        deviation = Math.abs(optimalBackend-myBackend) + Math.abs(optimalFrontend-myFrontend) + Math.abs(optimalDatabase-myDatabase);
+    }
+
+
+    // ПЕРВИЧНЫЙ НАБОР ПРЕДМЕТОВ
+    private class Preparing extends SimpleBehaviour {
+        public void action() {
+            for (int i = 0, j = 0; i < Programmers.size() && j < fillingsize; i++){
+                AID t = Programmers.get(i);
+                ACLMessage cfp1 = new ACLMessage(ACLMessage.CFP);
+                cfp1.addReceiver(t);
+                cfp1.setContent("Team " + getAID().getName() + " check");
+                myAgent.send(cfp1);
+                MessageTemplate mt = MessageTemplate.MatchPerformative(ACLMessage.PROPOSE);
+                ACLMessage msg = blockingReceive(mt,100);
+                if (msg != null) {
+                    String title = msg.getContent();
+                    String[] arguments = title.split(" ");
+                    if (!arguments[2].equals("used"))
+                    {
+                        myPNames.add(arguments[1]);
+                        myFrontendValues.add(Double.parseDouble(arguments[2]));
+                        myBackendValues.add(Double.parseDouble(arguments[3]));
+                        myDatabaseValues.add(Double.parseDouble(arguments[4]));
+                        //usedProgrammers.add(t);
+                        j++;
+                    }
+                }
+            }
+            parametersCalc();
+            writeFile();
+            workPointer = 1;
+        }
+
+        public boolean done() { return workPointer == 1;}
+
+    }
+
+
+    // РАБОТА ОБМЕНА МЕЖДУ КОНТЕЙНЕРАМИ
+    private class Working extends CyclicBehaviour {
+        public void action() {
+            if (deviation > 0) {
+                // Выбирается случайное поведение
+                if (Math.random() > 0.5) {
+                    //System.out.println(getAID().getName() + " --- Отправитель");
+                    MessageTemplate mt = MessageTemplate.MatchPerformative(ACLMessage.INFORM);
+                    ACLMessage msg = myAgent.blockingReceive(mt, 1000);
+                    // Отправитель сообщения
+                    if (msg != null) {
+                        if (Objects.equals(msg.getContent(), "ready")) {
+                            //System.out.println(getAID().getName() + " --- Отправитель - Принял сообщение ready");
+                            ACLMessage reply = msg.createReply();
+                            reply.setPerformative(ACLMessage.PROPOSE);
+                            reply.setContent("readytoo");
+                            myAgent.send(reply);
+                            MessageTemplate mt2 = MessageTemplate.MatchPerformative(ACLMessage.AGREE);
+                            ACLMessage msg2 = myAgent.blockingReceive(mt2, 1000);
+                            if (msg2 != null) {
+                                if (Objects.equals(msg2.getContent(), "go")) {
+                                    //System.out.println(getAID().getName() + " --- Отправитель - Принял сообщение go");
+                                    // Отправляет предмет для обмена
+                                    ACLMessage reply1 = msg2.createReply();
+                                    reply1.setPerformative(ACLMessage.AGREE);
+
+
+                                    List<String> myPNamesNew = new ArrayList<>();
+                                    List<Double> myFrontendValuesNew = new ArrayList<>();
+                                    List<Double> myBackendValuesNew = new ArrayList<>();
+                                    List<Double> myDatabaseValuesNew = new ArrayList<>();
+
+                                    for (int i = 0; i < fillingsize; i++) {
+                                        myPNamesNew.add(myPNames.get(i));
+                                        myFrontendValuesNew.add(myFrontendValues.get(i));
+                                        myBackendValuesNew.add(myBackendValues.get(i));
+                                        myDatabaseValuesNew.add(myDatabaseValues.get(i));
+                                    }
+
+                                    int randi = (int) ( Math.random() * fillingsize );
+                                    //int randi = 0;
+
+
+                                    Double SendingFrontend = myFrontendValuesNew.remove(randi);
+                                    Double SendingBackend = myBackendValuesNew.remove(randi);
+                                    Double SendingDatabase = myDatabaseValuesNew.remove(randi);
+                                    String SendingPNames = myPNamesNew.remove(randi);
+
+                                    reply1.setContent("obj " + SendingPNames + " " + SendingFrontend + " " + SendingBackend + " " + SendingDatabase); // Отправить объект
+                                    myAgent.send(reply1);
+
+                                    //Ждёт пока ему придёт обратный предмет для обмена
+                                    ACLMessage msg3 = myAgent.blockingReceive(mt2, 1000);
+                                    if (msg3 != null) {
+                                        ACLMessage reply2 = msg3.createReply();
+                                        reply2.setPerformative(ACLMessage.AGREE);
+
+                                        String title = msg3.getContent();
+                                        String[] arguments = title.split(" ");
+
+                                        //System.out.println(getAID().getName() + " --- Отправитель - Принял сообщение для + --- " + title);
+                                        // Если другой объект подтвердил обмен, сверяет необходимость обмена для себя
+                                        if (Objects.equals(arguments[0], "+")) {
+                                            myPNamesNew.add(arguments[1]);
+                                            myFrontendValuesNew.add(Double.parseDouble(arguments[2]));
+                                            myBackendValuesNew.add(Double.parseDouble(arguments[3]));
+                                            myDatabaseValuesNew.add(Double.parseDouble(arguments[4]));
+
+                                            Double myFrontendNew = 0.0;
+                                            Double myBackendNew = 0.0;
+                                            Double myDatabaseNew = 0.0;
+
+                                            for (int i = 0; i < fillingsize; i++) {
+                                                myFrontendNew += myFrontendValuesNew.get(i);
+                                                myBackendNew += myBackendValuesNew.get(i);
+                                                myDatabaseNew += myDatabaseValuesNew.get(i);
+                                            }
+                                            double deviationNew = Math.abs(optimalFrontend - myFrontendNew) + Math.abs(optimalBackend - myBackendNew) + Math.abs(optimalDatabase - myDatabaseNew);
+
+                                            if (deviationNew <= deviation) {
+                                                reply2.setContent("+");
+
+                                                myPNames.clear();
+                                                myFrontendValues.clear();
+                                                myBackendValues.clear();
+                                                myDatabaseValues.clear();
+
+                                                for (int i = 0; i < fillingsize; i++) {
+                                                    myPNames.add(myPNamesNew.get(i));
+                                                    myFrontendValues.add(myFrontendValuesNew.get(i));
+                                                    myBackendValues.add(myBackendValuesNew.get(i));
+                                                    myDatabaseValues.add(myDatabaseValuesNew.get(i));
+                                                }
+
+                                            /*myPNames = myPNamesNew;
+                                            myFrontendValues = myFrontendValuesNew;
+                                            myBackendValues = myBackendValuesNew;
+                                            myDatabaseValues = myDatabaseValuesNew;*/
+                                                deviation = deviationNew;
+                                                myFrontend = myFrontendNew;
+                                                myBackend = myBackendNew;
+                                                myDatabase = myDatabaseNew;
+
+                                                System.out.println("Совершён обмен");
+                                            } else {
+                                                reply2.setContent("-");
+                                            }
+                                            myAgent.send(reply2);
+                                        }
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    //System.out.println(getAID().getName() + " --- Получатель");
+                    ACLMessage cfp = new ACLMessage(ACLMessage.INFORM);
+                    for (int i = 0; i < Teams.size(); ++i) {
+                        if (!Teams.get(i).getName().equals(getAID().getName())) {
+                            cfp.addReceiver(Teams.get(i));
+                        }
+                    }
+                    cfp.setContent("ready");
+                    myAgent.send(cfp);
+                    // Приёмник сообщения
+                    MessageTemplate mt2 = MessageTemplate.MatchPerformative(ACLMessage.PROPOSE);
+                    ACLMessage msg2 = myAgent.blockingReceive(mt2, 1000);
+                    if (msg2 != null) {
+                        if (Objects.equals(msg2.getContent(), "readytoo")) {
+                            //System.out.println(getAID().getName() + " --- Получатель - Принял сообщение readytoo");
+                            ACLMessage reply = msg2.createReply();
+                            reply.setPerformative(ACLMessage.AGREE);
+                            reply.setContent("go");
+                            myAgent.send(reply);
+                            //Ждёт пока ему придёт предмет для обмена
+                            MessageTemplate mt3 = MessageTemplate.MatchPerformative(ACLMessage.AGREE);
+                            ACLMessage msg3 = myAgent.blockingReceive(mt3, 1000);
+                            if (msg3 != null) {
+                                String title = msg3.getContent();
+                                String[] arguments = title.split(" ");
+                                //System.out.println(getAID().getName() + " --- Получатель - Принял сообщение для Obj --- " + title);
+                                if (Objects.equals(arguments[0], "obj")) {
+                                    //System.out.println(getAID().getName() + " --- Получатель - Принял сообщение Obj");
+                                    ACLMessage reply1 = msg3.createReply();
+                                    reply1.setPerformative(ACLMessage.AGREE);
+
+                                    List<String> myPNamesNew = new ArrayList<>();
+                                    List<Double> myFrontendValuesNew = new ArrayList<>();
+                                    List<Double> myBackendValuesNew = new ArrayList<>();
+                                    List<Double> myDatabaseValuesNew = new ArrayList<>();
+
+                                    for (int i = 0; i < fillingsize; i++) {
+                                        myPNamesNew.add(myPNames.get(i));
+                                        myFrontendValuesNew.add(myFrontendValues.get(i));
+                                        myBackendValuesNew.add(myBackendValues.get(i));
+                                        myDatabaseValuesNew.add(myDatabaseValues.get(i));
+                                    }
+
+                                    int randi = (int) ( Math.random() * fillingsize );
+                                    //int randi = 0;
+                                    String SendingPNames = myPNamesNew.remove(randi);
+                                    Double SendingFrontend = myFrontendValuesNew.remove(randi);
+                                    Double SendingBackend = myBackendValuesNew.remove(randi);
+                                    Double SendingDatabase = myDatabaseValuesNew.remove(randi);
+
+                                    myPNamesNew.add(arguments[1]);
+                                    myFrontendValuesNew.add(Double.parseDouble(arguments[2]));
+                                    myBackendValuesNew.add(Double.parseDouble(arguments[3]));
+                                    myDatabaseValuesNew.add(Double.parseDouble(arguments[4]));
+
+                                    Double myFrontendNew = 0.0;
+                                    Double myBackendNew = 0.0;
+                                    Double myDatabaseNew = 0.0;
+
+                                    for (int i = 0; i < fillingsize; i++) {
+                                        myFrontendNew += myFrontendValuesNew.get(i);
+                                        myBackendNew += myBackendValuesNew.get(i);
+                                        myDatabaseNew += myDatabaseValuesNew.get(i);
+                                    }
+
+                                    double deviationNew = Math.abs(optimalFrontend - myFrontendNew) + Math.abs(optimalBackend - myBackendNew) + Math.abs(optimalDatabase - myDatabaseNew);
+
+
+                                    if (deviationNew < deviation) {
+                                        //System.out.println(getAID().getName() + " --- Получатель - Условия удовлетворительны");
+
+                                        reply1.setContent("+ " + SendingPNames + " " + SendingFrontend + " " + SendingBackend + " " + SendingDatabase); // Отправить объект
+                                        myAgent.send(reply1);
+
+                                        ACLMessage msg4 = myAgent.blockingReceive(mt3, 1000);
+                                        // Ждёт подтверждения обмена
+                                        if (msg4 != null) {
+                                            String title1 = msg4.getContent();
+
+                                            //System.out.println(getAID().getName() + " --- Получатель - Оиждает одобрения --- " + title1 );
+                                            //String[] arguments1 = title1.split(" ");
+                                            //Если подтвержден изменяет значения параметров
+                                            if (Objects.equals(title1, "+")) {
+
+                                                myPNames.clear();
+                                                myFrontendValues.clear();
+                                                myBackendValues.clear();
+                                                myDatabaseValues.clear();
+
+                                                for (int i = 0; i < fillingsize; i++) {
+                                                    myPNames.add(myPNamesNew.get(i));
+                                                    myFrontendValues.add(myFrontendValuesNew.get(i));
+                                                    myBackendValues.add(myBackendValuesNew.get(i));
+                                                    myDatabaseValues.add(myDatabaseValuesNew.get(i));
+                                                }
+
+                                                deviation = deviationNew;
+                                                myFrontend = myFrontendNew;
+                                                myBackend = myBackendNew;
+                                                myDatabase = myDatabaseNew;
+
+                                                //System.out.println(getAID().getName() + " --- Получатель - Обмен завершён");
+                                            }
+                                        }
+                                    } else {
+                                        //System.out.println(getAID().getName() + " --- Получатель - Условия неудовлетворительны");
+                                        reply1.setContent("-");
+                                        myAgent.send(reply1);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                }
+            }
+        }
+    }
+
+
+
+
+}
+
